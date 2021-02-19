@@ -6,7 +6,128 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+
+library(tidyr)
+library(dplyr)
+library(janitor)
+library(ggplot2)
+library(gghighlight)
+library(readxl)
+library(lubridate)
+library(scales)
+library(tmaptools)
+library(leaflet)
+library(leaflet.extras)
 ```
 
+```{r data}
+data <- read_xlsx("data/Melbourne.xlsx")
+
+data <- data %>%
+  clean_names() %>%
+  filter(lease_start_date > "2016-01-01" & lease_start_date < "2020-12-31") %>%
+  filter(lease_agreed_rent > 0) %>%
+  filter(lease_basis == "Net") %>%
+  mutate(rate = lease_agreed_rent/area,
+         year = year(lease_start_date),
+         month = month(lease_start_date)) %>%
+  group_by(year) %>%
+  filter(between(rate, quantile(rate, 0.1, na.rm = TRUE), quantile(rate, 0.9, na.rm = TRUE)))
+```
+
+```{r year}
+
+time <- data %>%
+  summarise(rent = mean(rate))
+
+time %>%
+  ggplot(aes(x = year, y = rent)) +
+  geom_line() +
+  labs(x = "Year", y = "Net Rent psqm") +
+  scale_y_continuous(labels = label_dollar()) +
+  theme_bw() + 
+  ggtitle("Yearly average net rent psqm in CoM")
+
+```
+
+```{r month}
+monthly <- data %>%
+  ungroup() %>%
+  filter(year == 2020) %>%
+  group_by(month) %>%
+  summarise(rent = mean(rate))
+
+
+monthly %>%
+  ggplot(aes(x = month, y = rent)) +
+  geom_line() +
+  labs(x = "Month", y = "Net Rent psqm") +
+  scale_y_continuous(labels = label_dollar()) +
+  scale_x_discrete(limits = month.abb) +
+  theme_bw() + 
+  ggtitle("Monthly average net rent psqm in CoM for 2020")
+```
+
+```{r suburbs}
+burbs <- data %>%
+  ungroup() %>%
+  filter(year == 2020) %>%
+  filter(property_category == "Commercial" | property_category == "Retail") %>%
+  filter(suburb != "South Yarra") %>%
+  filter(suburb != "Parkville") %>%
+  group_by(suburb, property_category) %>%
+  summarise(rent = mean(rate))
+
+burbs %>%
+  ggplot(aes(x = suburb, y = rent, group = property_category, fill = property_category)) +
+  geom_col(position = "dodge", colour = "black") + 
+  scale_y_continuous(labels = label_dollar()) +
+  theme_bw() +
+  labs(x = "Subrub", y = "Net Rent psqm", fill = "Property Category") +
+  ggtitle("Average net rents in each suburb by property category")
+```
+
+```{r streets}
+streets <- data %>%
+  filter(suburb == "Melbourne") %>%
+  filter(street_name %in% c("Bourke", "Collins", "Elizabeth", "Exhibition", "Flinders", "La Trobe", "Lonsdale", "Swanston")) %>%
+  group_by(street_name, year) %>%
+  summarise(rent = mean(rate))
+
+streets %>%
+  ggplot(aes(x = year, y = rent, colour = street_name)) +
+  geom_line(size = 1) +
+  facet_wrap(~street_name) +
+  theme_bw() +
+  gghighlight(use_direct_label = FALSE) + 
+  labs(x = "Year", y = "Net rent psqm") +
+  scale_y_continuous(labels = label_dollar()) +
+  theme(legend.position = "none") + 
+  ggtitle("Average net rent per year by street")
+```
+
+```{r geo}
+retail <- data %>%
+  ungroup() %>%
+  filter(year > 2019) %>%
+  separate(address, into = c("Suite", "Address"), fill = "left", sep = "/") %>%
+  filter(primary_avpcc_code >= 210 & primary_avpcc_code <=211 | primary_avpcc_code >= 240 & primary_avpcc_code <= 241) %>%
+  select(Address, rate, primary_avpcc_code)
+
+loc <- geocode_OSM(retail$Address)
+
+retail <- retail %>%
+  left_join(loc, by = c("Address" = "query"))
+
+retail <- retail %>%
+  filter(Address != "171 Domain Road, South Yarra, 3141")
+
+retail %>%
+  leaflet() %>%
+  addProviderTiles("CartoDB.DarkMatter") %>%
+  addHeatmap(~lon, ~lat, intensity = ~rate, max = 1000, blur = 20, radius = 20)
+```
 
